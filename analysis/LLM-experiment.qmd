@@ -1,0 +1,32 @@
+---
+title: "LLM-Experiment"
+author: "Maria Cuellar"
+date: today
+resource-path:
+  - ..
+format:
+  html:
+    toc: true
+    toc-location: body
+    toc-depth: 2
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+We begin by loading the packages used.
+
+```{r setup}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(ggplot2)
+```
+
+# Overview
+

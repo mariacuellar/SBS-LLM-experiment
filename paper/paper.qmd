@@ -1,0 +1,56 @@
+---
+title: "SBS-LLM experiment"
+author:
+  - name: "Maria Cuellar"
+date: today
+bibliography: references.bib
+format:
+  pdf:
+    documentclass: article
+    classoption:
+      - 11pt
+      - oneside
+    toc: false
+    number-sections: true
+  docx: default
+header-includes:
+  - \usepackage{authblk}
+  - \usepackage{geometry}
+  - \geometry{letterpaper}
+  - \usepackage{graphicx}
+  - \usepackage{amssymb}
+  - \usepackage{amsmath}
+  - \usepackage{url}
+  - \usepackage{comment}
+  - \usepackage{booktabs}
+  - \usepackage{setspace}
+  - \usepackage{lineno}
+  - \PassOptionsToPackage{hyphens}{url}
+  - \usepackage{hyperref}
+  - \floatingpenalty=20000
+  - \widowpenalty=150
+  - \usepackage{xcolor}
+  - \newcommand\red[1]{\textcolor{red}{#1}}
+  - \usepackage[normalem]{ulem}
+  - \makeatletter
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(cluster)
+library(knitr)
+library(poLCA)
+```
+
+# Abstract
+
+Add a structured abstract here.
+
+# Introduction
+
+
