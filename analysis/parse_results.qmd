@@ -1,0 +1,166 @@
+---
+title: "Parse Results"
+format:
+  html:
+    toc: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+This document parses raw LLM outputs into structured columns and saves the result to `results/parsed_outputs.csv`.
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(jsonlite)
+  library(readr)
+  library(stringr)
+  library(tibble)
+})
+```
+
+## Configuration
+
+```{r}
+raw_results_path <- file.path("..", "results", "raw_outputs.csv")
+parsed_results_path <- file.path("..", "results", "parsed_outputs.csv")
+
+dir.create(dirname(parsed_results_path), recursive = TRUE, showWarnings = FALSE)
+```
+
+## Helpers
+
+```{r}
+strip_json_fences <- function(text) {
+  if (is.na(text) || !nzchar(text)) {
+    return(NA_character_)
+  }
+
+  cleaned <- text %>%
+    str_replace("^```json\\s*", "") %>%
+    str_replace("^```\\s*", "") %>%
+    str_replace("\\s*```$", "") %>%
+    str_trim()
+
+  cleaned
+}
+
+extract_json_object <- function(text) {
+  if (is.na(text) || !nzchar(text)) {
+    return(NA_character_)
+  }
+
+  cleaned <- strip_json_fences(text)
+  match <- str_match(cleaned, "(\\{[\\s\\S]*\\})")
+  json_candidate <- match[, 2]
+
+  if (is.na(json_candidate) || !nzchar(json_candidate)) {
+    return(cleaned)
+  }
+
+  json_candidate
+}
+
+to_bool <- function(x) {
+  if (is.logical(x) && length(x) == 1) {
+    return(x)
+  }
+
+  if (is.character(x) && length(x) == 1) {
+    x_lower <- tolower(trimws(x))
+    if (x_lower %in% c("true", "t", "yes", "1")) return(TRUE)
+    if (x_lower %in% c("false", "f", "no", "0")) return(FALSE)
+  }
+
+  NA
+}
+
+to_bounded_number <- function(x, min_value = 0, max_value = 100) {
+  val <- suppressWarnings(as.numeric(x))
+
+  if (length(val) == 0 || is.na(val)) {
+    return(NA_real_)
+  }
+
+  if (val < min_value || val > max_value) {
+    return(NA_real_)
+  }
+
+  val
+}
+
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0 || is.na(x)) y else x
+}
+
+safe_parse_output <- function(raw_text) {
+  cleaned_json <- extract_json_object(raw_text)
+
+  if (is.na(cleaned_json) || !nzchar(cleaned_json)) {
+    return(tibble(
+      parse_status = "no_text",
+      parse_error = "No response text available.",
+      cleaned_json = NA_character_,
+      classification = NA_character_,
+      abuse_probability = NA_real_,
+      report_to_cps = NA,
+      confidence = NA_real_,
+      reasoning_summary = NA_character_
+    ))
+  }
+
+  parsed <- tryCatch(
+    fromJSON(cleaned_json),
+    error = function(e) e
+  )
+
+  if (inherits(parsed, "error")) {
+    return(tibble(
+      parse_status = "parse_failed",
+      parse_error = conditionMessage(parsed),
+      cleaned_json = cleaned_json,
+      classification = NA_character_,
+      abuse_probability = NA_real_,
+      report_to_cps = NA,
+      confidence = NA_real_,
+      reasoning_summary = NA_character_
+    ))
+  }
+
+  classification <- parsed$classification %||% NA_character_
+  allowed_classes <- c("abuse", "indeterminate", "not_abuse")
+
+  if (!is.character(classification) || length(classification) != 1 || !(classification %in% allowed_classes)) {
+    classification <- NA_character_
+  }
+
+  tibble(
+    parse_status = "parsed",
+    parse_error = NA_character_,
+    cleaned_json = cleaned_json,
+    classification = classification,
+    abuse_probability = to_bounded_number(parsed$abuse_probability),
+    report_to_cps = to_bool(parsed$report_to_cps),
+    confidence = to_bounded_number(parsed$confidence),
+    reasoning_summary = as.character(parsed$reasoning_summary %||% NA_character_)
+  )
+}
+```
+
+## Parse Outputs
+
+```{r}
+raw_results <- read_csv(raw_results_path, show_col_types = FALSE)
+
+parsed_results <- raw_results %>%
+  rowwise() %>%
+  do(bind_cols(as_tibble(.), safe_parse_output(.$raw_response))) %>%
+  ungroup()
+
+write_csv(parsed_results, parsed_results_path)
+
+cat("Parsed results saved to:", parsed_results_path, "\n")
+cat("Rows parsed:", nrow(parsed_results), "\n")
+```

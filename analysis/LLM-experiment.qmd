@@ -1,5 +1,5 @@
 ---
-title: "LLM-Experiment"
+title: "LLM Experiment"
 author: "Maria Cuellar"
 date: today
 resource-path:
@@ -18,15 +18,100 @@ execute:
   message: false
 ---
 
-We begin by loading the packages used.
+This report summarizes a controlled multi-model audit of paired SBS/AHT or forensic vignettes. The analysis is structured around within-pair comparisons rather than treating repeated model calls as independent subjects.
 
 ```{r setup}
-library(readxl)
 library(dplyr)
-library(tidyr)
+library(readr)
 library(knitr)
 library(ggplot2)
+library(tidyr)
+library(stringr)
+
+summary_path <- "../results/paired_summary.csv"
+parsed_path <- "../results/parsed_outputs.csv"
+plot_path <- "../figures/abuse_probability_diff_by_model.png"
+
+summary_exists <- file.exists(summary_path)
+parsed_exists <- file.exists(parsed_path)
+plot_exists <- file.exists(plot_path)
+
+if (summary_exists) {
+  paired_summary <- read_csv(summary_path, show_col_types = FALSE)
+}
+
+if (parsed_exists) {
+  parsed_outputs <- read_csv(parsed_path, show_col_types = FALSE)
+}
 ```
 
 # Overview
 
+The project uses:
+
+- a fixed system prompt
+- a small set of fixed user prompt templates
+- stateless API calls
+- CSV-based storage for raw and parsed outputs
+- paired comparisons within vignette
+
+# Workflow
+
+Render the Quarto documents from the repository root in this order:
+
+```bash
+quarto render analysis/run_experiment.qmd
+quarto render analysis/parse_results.qmd
+quarto render analysis/analyze_results.qmd
+```
+
+Then re-render this Quarto document.
+
+# Current Inputs
+
+```{r}
+knitr::kable(read_csv("../vignettes.csv", show_col_types = FALSE))
+```
+
+# Parsed Output Snapshot
+
+```{r}
+if (parsed_exists) {
+  parsed_outputs %>%
+    select(provider, model, prompt_template, pair_id, condition_label,
+           classification, abuse_probability, report_to_cps, confidence,
+           parse_status, error_message) %>%
+    head(12) %>%
+    knitr::kable()
+} else {
+  cat("`results/parsed_outputs.csv` does not exist yet. Render `parse_results.qmd` first.")
+}
+```
+
+# Paired Summary Table
+
+```{r}
+if (summary_exists) {
+  paired_summary %>%
+    arrange(provider, model, prompt_template, target_attribute) %>%
+    knitr::kable(digits = 2)
+} else {
+  cat("`results/paired_summary.csv` does not exist yet. Render `analyze_results.qmd` first.")
+}
+```
+
+# Paired Difference Plot
+
+```{r, fig.width=10, fig.height=6}
+if (plot_exists) {
+  knitr::include_graphics(plot_path)
+} else {
+  cat("`figures/abuse_probability_diff_by_model.png` does not exist yet. Render `analyze_results.qmd` first.")
+}
+```
+
+# Notes
+
+This report intentionally centers paired differences. The key estimands are changes within the same vignette pair when only one socially salient but normatively irrelevant attribute is altered.
+
+Repeated calls can still be useful for sensitivity checks, but they should not be interpreted as independent survey respondents.

@@ -1,0 +1,112 @@
+---
+title: "Analyze Results"
+format:
+  html:
+    toc: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+This document computes within-pair differences, writes a summary table, and saves a plot.
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(readr)
+  library(stringr)
+  library(tidyr)
+})
+```
+
+## Configuration
+
+```{r}
+parsed_results_path <- file.path("..", "results", "parsed_outputs.csv")
+summary_path <- file.path("..", "results", "paired_summary.csv")
+plot_path <- file.path("..", "figures", "abuse_probability_diff_by_model.png")
+
+dir.create(dirname(summary_path), recursive = TRUE, showWarnings = FALSE)
+dir.create(dirname(plot_path), recursive = TRUE, showWarnings = FALSE)
+```
+
+## Build Paired Analysis
+
+```{r}
+parsed_results <- read_csv(parsed_results_path, show_col_types = FALSE)
+
+analysis_ready <- parsed_results %>%
+  filter(condition_label %in% c("A", "B")) %>%
+  filter(parse_status == "parsed") %>%
+  mutate(request_timestamp_utc = as.POSIXct(request_timestamp_utc, tz = "UTC")) %>%
+  arrange(request_timestamp_utc) %>%
+  group_by(provider, model, prompt_template, pair_id, condition_label) %>%
+  slice_tail(n = 1) %>%
+  ungroup()
+
+paired_results <- analysis_ready %>%
+  select(
+    provider, model, prompt_template, pair_id, target_attribute,
+    condition_label, attribute_value, classification,
+    abuse_probability, report_to_cps, confidence
+  ) %>%
+  pivot_wider(
+    names_from = condition_label,
+    values_from = c(attribute_value, classification, abuse_probability, report_to_cps, confidence),
+    names_sep = "_"
+  ) %>%
+  filter(
+    !is.na(abuse_probability_A) | !is.na(abuse_probability_B) |
+      !is.na(classification_A) | !is.na(classification_B)
+  ) %>%
+  mutate(
+    abuse_probability_diff = abuse_probability_B - abuse_probability_A,
+    confidence_diff = confidence_B - confidence_A,
+    classification_changed = classification_A != classification_B,
+    report_to_cps_changed = report_to_cps_A != report_to_cps_B
+  )
+
+summary_table <- paired_results %>%
+  group_by(provider, model, prompt_template, target_attribute) %>%
+  summarise(
+    n_pairs = n(),
+    mean_abuse_probability_diff = mean(abuse_probability_diff, na.rm = TRUE),
+    mean_abs_abuse_probability_diff = mean(abs(abuse_probability_diff), na.rm = TRUE),
+    mean_confidence_diff = mean(confidence_diff, na.rm = TRUE),
+    pct_classification_changed = 100 * mean(classification_changed, na.rm = TRUE),
+    pct_report_to_cps_changed = 100 * mean(report_to_cps_changed, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+## Save Outputs
+
+```{r}
+write_csv(summary_table, summary_path)
+
+plot_df <- paired_results %>%
+  mutate(model_label = str_c(provider, "/", model))
+
+p <- ggplot(plot_df, aes(x = model_label, y = abuse_probability_diff, fill = target_attribute)) +
+  geom_col(position = position_dodge(width = 0.8)) +
+  facet_wrap(~ prompt_template) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  labs(
+    title = "Paired Difference in Abuse Probability",
+    subtitle = "Computed as condition B minus condition A within vignette pair",
+    x = "Model",
+    y = "Abuse probability difference",
+    fill = "Target attribute"
+  ) +
+  theme_minimal(base_size = 12)
+
+ggsave(plot_path, p, width = 10, height = 6, dpi = 300)
+
+cat("\nSummary table\n")
+print(summary_table, n = nrow(summary_table))
+
+cat("\nSaved summary to:", summary_path, "\n")
+cat("Saved plot to:", plot_path, "\n")
+```
