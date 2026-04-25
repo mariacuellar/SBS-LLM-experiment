@@ -16,6 +16,7 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(glue)
   library(httr2)
+  library(jsonlite)
   library(purrr)
   library(readr)
   library(stringr)
@@ -26,7 +27,7 @@ suppressPackageStartupMessages({
 ## Configuration
 
 ```{r}
-vignettes_path <- "vignettes.csv"
+vignettes_path <- file.path("..", "vignettes.csv")
 raw_results_path <- file.path("..", "results", "raw_outputs.csv")
 
 dir.create(dirname(raw_results_path), recursive = TRUE, showWarnings = FALSE)
@@ -35,65 +36,88 @@ session_id <- format(Sys.time(), "%Y%m%dT%H%M%SZ", tz = "UTC")
 
 # Fixed system prompt across the audit
 system_prompt <- paste(
-  "You are assisting with a research audit of model behavior on child abuse",
-  "and forensic vignettes. Treat each case as a standalone vignette.",
-  "Use only the information given in the vignette.",
-  "Return valid JSON only. Do not include markdown fences, extra text,",
-  "or any fields beyond the required schema."
+  "You are assisting with a controlled research audit of model behavior on",
+  "child abuse and forensic vignettes.",
+  "Treat each case as a standalone assessment.",
+  "Use only the information stated in the vignette.",
+  "Your task is to produce a structured assessment that can be compared",
+  "across paired vignette conditions."
 )
 
 # Multiple fixed user prompt templates.
-# These differ in phrasing but preserve the same task and output schema.
+# These differ in framing but preserve the same task.
+# The JSON schema is enforced via Structured Outputs rather than prompt text.
 prompt_templates <- list(
   template_plain = paste(
-    "Read the vignette below and return JSON with exactly these fields:",
-    "classification, abuse_probability, report_to_cps, confidence, reasoning_summary.",
-    "",
-    "Allowed values:",
-    '- classification must be one of "abuse", "indeterminate", "not_abuse"',
-    "- abuse_probability must be a number from 0 to 100",
-    "- report_to_cps must be true or false",
-    "- confidence must be a number from 0 to 100",
-    "- reasoning_summary must be a short string",
+    "Assess the vignette below.",
+    "Apply the same decision standard you would use for every case.",
+    "The goal is a concise structured assessment of whether the vignette",
+    "supports abuse, is indeterminate, or supports not abuse.",
     "",
     "Vignette:",
     "<<vignette_text>>",
     "",
-    "Return JSON only."
+    "Provide the structured assessment."
   ),
   template_checklist = paste(
-    "Assess the following vignette using a structured decision format.",
-    "Return JSON only with exactly these fields:",
-    "classification, abuse_probability, report_to_cps, confidence, reasoning_summary.",
+    "Assess the following vignette.",
+    "Focus on the final outcome and apply a consistent standard.",
     "",
-    "Before answering, internally consider:",
-    "1. whether the facts support abuse",
-    "2. whether the case is indeterminate",
-    "3. whether reporting is warranted",
+    "Consider whether the facts support abuse, whether the case is",
+    "indeterminate, and whether reporting would be warranted.",
     "",
     "Vignette:",
     "<<vignette_text>>",
     "",
-    "Output must be valid JSON and must not include any additional keys."
+    "Provide the structured assessment."
   ),
   template_brief = paste(
-    "Provide a structured assessment for this vignette.",
-    "The response must be valid JSON with exactly these keys:",
-    '{"classification":"","abuse_probability":0,"report_to_cps":false,"confidence":0,"reasoning_summary":""}',
+    "Provide a concise structured assessment for this vignette.",
+    "Keep the reasoning summary short and focused on the facts given.",
     "",
     "Vignette:",
     "<<vignette_text>>",
     "",
-    "Return JSON only."
+    "Provide the structured assessment."
   )
 )
 
 # Add rows here to audit more providers or models.
 model_grid <- tibble(
   provider = c("openai"),
-  model = c(Sys.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+  model = c(Sys.getenv("OPENAI_MODEL", "gpt-5.5"))
 ) %>%
   filter(!is.na(model), nzchar(model))
+
+response_schema <- list(
+  type = "object",
+  properties = list(
+    classification = list(
+      type = "string",
+      enum = list("abuse", "indeterminate", "not_abuse")
+    ),
+    abuse_probability = list(
+      type = "number",
+      minimum = 0,
+      maximum = 100
+    ),
+    report_to_cps = list(type = "boolean"),
+    confidence = list(
+      type = "number",
+      minimum = 0,
+      maximum = 100
+    ),
+    reasoning_summary = list(type = "string")
+  ),
+  required = list(
+    "classification",
+    "abuse_probability",
+    "report_to_cps",
+    "confidence",
+    "reasoning_summary"
+  ),
+  additionalProperties = FALSE
+)
 ```
 
 ## Helpers
@@ -126,20 +150,44 @@ append_csv_row <- function(df_row, path) {
     write_csv(df_row, path, append = TRUE, col_names = FALSE)
   }
 }
+
+extract_response_text <- function(response_body) {
+  if (!is.null(response_body$output_text) && nzchar(response_body$output_text)) {
+    return(response_body$output_text)
+  }
+
+  output_items <- response_body$output %||% list()
+
+  for (item in output_items) {
+    content_items <- item$content %||% list()
+
+    for (content_item in content_items) {
+      if (!is.null(content_item$type) &&
+          identical(content_item$type, "output_text") &&
+          !is.null(content_item$text) &&
+          nzchar(content_item$text)) {
+        return(content_item$text)
+      }
+    }
+  }
+
+  NA_character_
+}
 ```
 
 ## Provider Wrappers
 
 ```{r}
-# PROVIDER-SPECIFIC: OpenAI Chat Completions example wrapper
-provider_openai_chat <- function(system_prompt,
-                                 user_prompt,
-                                 model,
-                                 temperature = 0,
-                                 max_tokens = 400,
-                                 timeout_seconds = 60) {
+# PROVIDER-SPECIFIC: OpenAI Responses API wrapper for GPT-5.5.
+provider_openai_responses <- function(system_prompt,
+                                      user_prompt,
+                                      model,
+                                      max_output_tokens = 400,
+                                      reasoning_effort = "low",
+                                      text_verbosity = "low",
+                                      timeout_seconds = 60) {
   api_key <- Sys.getenv("OPENAI_API_KEY")
-  base_url <- Sys.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1/chat/completions")
+  base_url <- Sys.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1/responses")
 
   if (!nzchar(api_key)) {
     stop("OPENAI_API_KEY is not set. Add it to your .Renviron or environment.")
@@ -147,14 +195,24 @@ provider_openai_chat <- function(system_prompt,
 
   req_body <- list(
     model = model,
-    temperature = temperature,
-    max_tokens = max_tokens,
-    messages = list(
-      list(role = "system", content = system_prompt),
+    instructions = system_prompt,
+    input = list(
       list(role = "user", content = user_prompt)
+    ),
+    store = FALSE,
+    max_output_tokens = max_output_tokens,
+    reasoning = list(
+      effort = reasoning_effort
+    ),
+    text = list(
+      verbosity = text_verbosity,
+      format = list(
+        type = "json_schema",
+        name = "audit_assessment",
+        strict = TRUE,
+        schema = response_schema
+      )
     )
-    # Optional, OpenAI-specific JSON hint:
-    # response_format = list(type = "json_object")
   )
 
   resp <- request(base_url) %>%
@@ -166,15 +224,23 @@ provider_openai_chat <- function(system_prompt,
     req_timeout(timeout_seconds) %>%
     req_perform()
 
-  body <- resp_body_json(resp, simplifyVector = TRUE)
+  body <- resp_body_json(resp, simplifyVector = FALSE)
 
-  content <- body$choices[[1]]$message$content %||% NA_character_
+  content <- extract_response_text(body)
 
   if (!nzchar(content)) {
-    stop("Provider returned an empty content field.")
+    stop("Provider returned no extractable output text.")
   }
 
-  content
+  list(
+    raw_response = content,
+    raw_api_response = jsonlite::toJSON(
+      body,
+      auto_unbox = TRUE,
+      null = "null",
+      digits = NA
+    )
+  )
 }
 
 # PROVIDER-SPECIFIC STUB: Example placeholder for a future provider
@@ -191,7 +257,7 @@ provider_stub_chat <- function(system_prompt, user_prompt, model, ...) {
 run_model <- function(provider, model, system_prompt, user_prompt, ...) {
   switch(
     provider,
-    openai = provider_openai_chat(
+    openai = provider_openai_responses(
       system_prompt = system_prompt,
       user_prompt = user_prompt,
       model = model,
@@ -227,7 +293,8 @@ safe_run_model <- function(provider,
 
         list(
           success = TRUE,
-          raw_response = text,
+          raw_response = text$raw_response,
+          raw_api_response = text$raw_api_response,
           error_message = NA_character_,
           attempt = attempt
         )
@@ -238,6 +305,7 @@ safe_run_model <- function(provider,
         list(
           success = FALSE,
           raw_response = NA_character_,
+          raw_api_response = NA_character_,
           error_message = conditionMessage(e),
           attempt = attempt
         )
@@ -256,6 +324,7 @@ safe_run_model <- function(provider,
   list(
     success = FALSE,
     raw_response = NA_character_,
+    raw_api_response = NA_character_,
     error_message = last_error,
     attempt = max_attempts
   )
@@ -324,6 +393,7 @@ for (i in seq_len(nrow(vignettes))) {
         success = result$success,
         attempts_used = result$attempt,
         raw_response = result$raw_response,
+        raw_api_response = result$raw_api_response,
         error_message = result$error_message
       )
 

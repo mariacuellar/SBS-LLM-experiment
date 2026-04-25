@@ -18,7 +18,7 @@ execute:
   message: false
 ---
 
-This report summarizes a controlled multi-model audit of paired SBS/AHT or forensic vignettes. The analysis is structured around within-pair comparisons rather than treating repeated model calls as independent subjects.
+This report summarizes a controlled multi-model audit of paired SBS/AHT or forensic vignettes. The OpenAI workflow uses the Responses API with Structured Outputs so the output schema is enforced in the request rather than only described in the prompt. The analysis is structured around within-pair comparisons rather than treating repeated model calls as independent subjects.
 
 ```{r setup}
 library(dplyr)
@@ -51,6 +51,8 @@ The project uses:
 
 - a fixed system prompt
 - a small set of fixed user prompt templates
+- `gpt-5.5` via the OpenAI Responses API
+- Structured Outputs with a strict JSON schema
 - stateless API calls
 - CSV-based storage for raw and parsed outputs
 - paired comparisons within vignette

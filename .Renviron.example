@@ -2,7 +2,7 @@
 # Do not commit your real .Renviron file.
 
 OPENAI_API_KEY=your_api_key_here
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-5.5
 
-# Optional: for OpenAI-compatible endpoints
-OPENAI_BASE_URL=https://api.openai.com/v1/chat/completions
+# Optional: override only if you are using an OpenAI-compatible proxy.
+OPENAI_BASE_URL=https://api.openai.com/v1/responses
